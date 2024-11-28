@@ -314,6 +314,132 @@ function displayChatMessage(username, message) {
     messages.scrollTop = messages.scrollHeight;
 }
 
+async function checkForExistingManifest(folderHandle, fileName) {
+    try {
+        // Try to get manifest file handle
+        const manifestHandle = await folderHandle.getFileHandle(fileName + '.manifest', { create: false });
+        const manifestFile = await manifestHandle.getFile();
+        const manifestData = JSON.parse(await manifestFile.text());
+
+        // Check for existing chunks
+        const chunks = new Array(manifestData.chunks.length);
+        let receivedSize = 0;
+
+        for (let i = 0; i < manifestData.chunks.length; i++) {
+            try {
+                const chunkHandle = await folderHandle.getFileHandle(`${fileName}.chunk.${i}`, { create: false });
+                const chunkFile = await chunkHandle.getFile();
+                chunks[i] = await chunkFile.arrayBuffer();
+                receivedSize += chunks[i].byteLength;
+            } catch {
+                // Chunk doesn't exist, leave as undefined
+            }
+        }
+
+        return {
+            ...manifestData,
+            chunks,
+            receivedSize
+        };
+    } catch {
+        // No manifest found
+        return null;
+    }
+}
+
+async function saveChunk(folderHandle, chunkFileName, chunkData) {
+    const chunkHandle = await folderHandle.getFileHandle(chunkFileName, { create: true });
+    const writable = await chunkHandle.createWritable();
+    await writable.write(chunkData);
+    await writable.close();
+}
+
+async function saveCompletedFile(folderHandle, fileName, fileBlob) {
+    const fileHandle = await folderHandle.getFileHandle(fileName, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(fileBlob);
+    await writable.close();
+}
+
+async function cleanupTransferFiles() {
+    try {
+        const baseFileName = currentFile.fileName;
+        // Remove all chunk files
+        for (let i = 0; i < currentFile.chunks.length; i++) {
+            try {
+                await downloadDirectory.removeEntry(`${baseFileName}.chunk.${i}`);
+            } catch (e) {
+                console.warn(`Failed to remove chunk ${i}`, e);
+            }
+        }
+        // Remove manifest
+        try {
+            await downloadDirectory.removeEntry(`${baseFileName}.manifest`);
+        } catch (e) {
+            console.warn('Failed to remove manifest', e);
+        }
+    } catch (e) {
+        console.error('Error during cleanup:', e);
+    }
+}
+
+async function cleanupExistingTransfer(folderHandle, fileName) {
+    try {
+        // Try to get manifest to know how many chunks to clean
+        const manifestHandle = await folderHandle.getFileHandle(fileName + '.manifest', { create: false });
+        const manifestFile = await manifestHandle.getFile();
+        const manifestData = JSON.parse(await manifestFile.text());
+
+        // Remove all possible chunks
+        for (let i = 0; i < manifestData.chunks.length; i++) {
+            try {
+                await folderHandle.removeEntry(`${fileName}.chunk.${i}`);
+            } catch {
+                // Ignore if chunk doesn't exist
+            }
+        }
+
+        // Remove manifest
+        await folderHandle.removeEntry(`${fileName}.manifest`);
+    } catch {
+        // If manifest doesn't exist, nothing to clean
+    }
+}
+
+// Error handling wrapper
+async function withErrorHandling(operation, errorMessage, defaultValue = null) {
+    try {
+        return await operation();
+    } catch (error) {
+        console.error(errorMessage, error);
+        if (error.name === 'NotAllowedError') {
+            alert('Permission denied. Please allow access to continue.');
+        } else {
+            alert(errorMessage);
+        }
+        return defaultValue;
+    }
+}
+
+// Progress tracking helper
+function updateProgressUI(current, total, fileName) {
+    const progress = Math.round((current / total) * 100);
+    const status = document.getElementById('file-status');
+    status.textContent = `${fileName}: ${progress}% (${formatSize(current)} of ${formatSize(total)})`;
+}
+
+// Size formatting helper
+function formatSize(bytes) {
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let size = bytes;
+    let unitIndex = 0;
+    while (size >= 1024 && unitIndex < units.length - 1) {
+        size /= 1024;
+        unitIndex++;
+    }
+    return `${size.toFixed(1)} ${units[unitIndex]}`;
+}
+
 function addDownloadLink(blob) {
     const div = document.getElementById('received-files');
     const link = document.createElement('a');
