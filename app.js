@@ -5,7 +5,15 @@ let currentFile = null;
 let receivedSize = 0;
 let fileSize = 0;
 const CHUNK_SIZE = 16384;
-const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB limit
+const MAX_FILE_SIZE = 2000 * 1024 * 1024; // 100MB limit
+const manifestStructure = {
+    fileName: '',
+    totalSize: 0,
+    chunks: [],
+    chunkSize: CHUNK_SIZE,
+    timestamp: ''
+};
+let downloadDirectory = null;
 
 function cleanup() {
     if (dataChannel) {
@@ -36,6 +44,44 @@ function resetFileInput() {
     fileIcon.classList.remove('file-selected');
     deleteFileBtn.classList.remove('visible');
     document.getElementById('file-name').textContent = 'No file selected';
+}
+
+async function selectDownloadFolder() {
+    try {
+        downloadDirectory = await window.showDirectoryPicker();
+        return downloadDirectory;
+    } catch (e) {
+        console.error('Error selecting folder:', e);
+        return null;
+    }
+}
+
+// Function to check for existing transfer
+async function checkExistingTransfer(folderHandle, fileName) {
+    try {
+        const manifestHandle = await folderHandle.getFileHandle(fileName + '.manifest', { create: false });
+        const manifestFile = await manifestHandle.getFile();
+        const manifestData = JSON.parse(await manifestFile.text());
+        
+        // Check for existing chunks
+        const existingChunks = [];
+        for (let i = 0; i < manifestData.chunks.length; i++) {
+            try {
+                const chunkHandle = await folderHandle.getFileHandle(`${fileName}.chunk.${i}`, { create: false });
+                const chunkFile = await chunkHandle.getFile();
+                existingChunks[i] = chunkFile;
+            } catch {
+                // Chunk doesn't exist
+            }
+        }
+        
+        return {
+            manifest: manifestData,
+            chunks: existingChunks
+        };
+    } catch {
+        return null;
+    }
 }
 
 function initWebRTC(username) {
@@ -143,7 +189,6 @@ document.getElementById('remote-desc').addEventListener('input', async () => {
 
 function setupDataChannel(channel) {
     channel.onopen = () => {
-        // Send username when channel opens if we're the offering peer
         if (channel.label === 'chat') {
             channel.send(JSON.stringify({
                 type: 'username',
@@ -156,84 +201,141 @@ function setupDataChannel(channel) {
         document.getElementById('file-transfer-area').style.display = 'block';
     };
 
-    channel.onmessage = event => {
+    let downloadDirectory = null;
+    let currentChunkIndex = undefined;
+
+    async function handleFileTransfer(manifest) {
+        try {
+            if (!downloadDirectory) {
+                downloadDirectory = await window.showDirectoryPicker();
+            }
+            
+            const existingManifest = await checkForExistingManifest(downloadDirectory, manifest.fileName);
+            if (existingManifest) {
+                const resume = confirm(`Partially downloaded file found. Resume download?`);
+                if (resume) {
+                    fileChunks = existingManifest.chunks;
+                    receivedSize = existingManifest.receivedSize;
+                } else {
+                    await cleanupExistingTransfer(downloadDirectory, manifest.fileName);
+                    fileChunks = new Array(manifest.chunks.length);
+                    receivedSize = 0;
+                }
+            } else {
+                fileChunks = new Array(manifest.chunks.length);
+                receivedSize = 0;
+            }
+
+            fileSize = manifest.totalSize;
+            currentFile = manifest;
+            
+            updateTransferStatus();
+        } catch (error) {
+            console.error('Error setting up file transfer:', error);
+            alert('Failed to setup file transfer. Please try again.');
+        }
+    }
+
+    async function handleChunkReceived(chunkData) {
+        try {
+            const chunkFileName = `${currentFile.fileName}.chunk.${currentChunkIndex}`;
+            await saveChunk(downloadDirectory, chunkFileName, chunkData);
+            
+            fileChunks[currentChunkIndex] = chunkData;
+            receivedSize += chunkData.byteLength;
+            
+            updateTransferStatus();
+
+            if (isTransferComplete()) {
+                await finalizeTransfer();
+            }
+        } catch (error) {
+            console.error('Error handling chunk:', error);
+            document.getElementById('file-status').textContent = 'Error receiving chunk. Transfer paused.';
+        }
+    }
+
+    async function finalizeTransfer() {
+        try {
+            const finalFile = new Blob(fileChunks);
+            await saveCompletedFile(downloadDirectory, currentFile.fileName, finalFile);
+            await cleanupTransferFiles();
+            
+            addDownloadLink(finalFile);
+            resetTransferState();
+        } catch (error) {
+            console.error('Error finalizing transfer:', error);
+            document.getElementById('file-status').textContent = 'Error completing transfer.';
+        }
+    }
+
+    channel.onmessage = async event => {
         if (typeof event.data === 'string') {
             try {
                 const message = JSON.parse(event.data);
-                if (message.type === 'file-info') {
-                    // Reset file transfer state
-                    fileChunks = [];
-                    receivedSize = 0;
-                    fileSize = message.fileSize;
-                    currentFile = {
-                        name: message.fileName,
-                        size: message.fileSize
-                    };
-                    document.getElementById('file-status').textContent = 
-                        `Receiving ${message.fileName} (0%)`;
-                } else if (message.type === 'username') {
-                    channel.remoteUsername = message.username;
-                    document.getElementById('connection-status').textContent = 
-                        `Connected with ${message.username}`;
-                } else {
-                    // Regular chat message
-                    const messages = document.getElementById('messages');
-                    const username = channel.remoteUsername || 'Other user';
-                    messages.innerHTML += `<p>${username}: ${message}</p>`;
-                    messages.scrollTop = messages.scrollHeight;
+                switch (message.type) {
+                    case 'manifest':
+                        await handleFileTransfer(message.manifest);
+                        break;
+                    case 'chunk-meta':
+                        currentChunkIndex = message.chunkIndex;
+                        break;
+                    case 'username':
+                        channel.remoteUsername = message.username;
+                        document.getElementById('connection-status').textContent = 
+                            `Connected with ${message.username}`;
+                        break;
+                    default:
+                        displayChatMessage(channel.remoteUsername || 'Other user', message);
                 }
             } catch (e) {
-                // Regular chat message (not JSON)
-                const messages = document.getElementById('messages');
-                const username = channel.remoteUsername || 'Other user';
-                messages.innerHTML += `<p>${username}: ${event.data}</p>`;
-                messages.scrollTop = messages.scrollHeight;
+                displayChatMessage(channel.remoteUsername || 'Other user', event.data);
             }
-        } else {
-            // Handle file chunk
-            fileChunks.push(event.data);
-            receivedSize += event.data.byteLength;
-            
-            const progress = Math.round((receivedSize / fileSize) * 100);
-            document.getElementById('file-status').textContent = 
-                `Receiving file... ${progress}%`;
-
-            if (receivedSize >= fileSize) {
-                const blob = new Blob(fileChunks);
-                const div = document.getElementById('received-files');
-                const link = document.createElement('a');
-                
-                // Try-catch block for blob URL creation
-                try {
-                    const url = URL.createObjectURL(blob);
-                    link.href = url;
-                    link.download = currentFile.name;
-                    link.textContent = `Download ${currentFile.name} (${currentFile.size} bytes)`;
-                    
-                    // Immediately revoke the URL after creating the link
-                    link.onclick = () => {
-                        setTimeout(() => {
-                            URL.revokeObjectURL(url);
-                        }, 100);
-                    };
-                } catch (e) {
-                    console.error('Error creating blob URL:', e);
-                    // Fallback for mobile devices
-                    link.href = '#';
-                    link.textContent = `${currentFile.name} (${currentFile.size} bytes) - Save not supported on this device`;
-                }
-                
-                div.appendChild(link);
-                div.appendChild(document.createElement('br'));
-                
-                // Cleanup
-                fileChunks = [];
-                document.getElementById('file-status').textContent = 'File received!';
-            }
+        } else if (currentFile && currentChunkIndex !== undefined) {
+            await handleChunkReceived(event.data);
         }
     };
 }
 
+// Helper functions
+function updateTransferStatus() {
+    const progress = Math.round((receivedSize / fileSize) * 100);
+    document.getElementById('file-status').textContent = 
+        `Receiving ${currentFile.fileName}... ${progress}%`;
+}
+
+function isTransferComplete() {
+    return !fileChunks.includes(undefined);
+}
+
+function displayChatMessage(username, message) {
+    const messages = document.getElementById('messages');
+    messages.innerHTML += `<p>${username}: ${message}</p>`;
+    messages.scrollTop = messages.scrollHeight;
+}
+
+function addDownloadLink(blob) {
+    const div = document.getElementById('received-files');
+    const link = document.createElement('a');
+    try {
+        const url = URL.createObjectURL(blob);
+        link.href = url;
+        link.download = currentFile.fileName;
+        link.textContent = `Download ${currentFile.fileName} (${fileSize} bytes)`;
+        link.onclick = () => setTimeout(() => URL.revokeObjectURL(url), 100);
+    } catch (e) {
+        link.href = '#';
+        link.textContent = `${currentFile.fileName} (${fileSize} bytes) - Save not supported`;
+    }
+    div.appendChild(link);
+    div.appendChild(document.createElement('br'));
+}
+
+function resetTransferState() {
+    fileChunks = [];
+    currentChunkIndex = undefined;
+    document.getElementById('file-status').textContent = 'File received!';
+}
 // Update send message handler to use username
 document.getElementById('send-message').onclick = () => {
     const input = document.getElementById('message-input');
@@ -294,24 +396,46 @@ document.getElementById('send-file').onclick = async () => {
     }
 
     currentFile = file;
-
-    dataChannel.send(JSON.stringify({
-        type: 'file-info',
+    
+    // Create manifest
+    const manifest = {
+        ...manifestStructure,
         fileName: file.name,
-        fileSize: file.size
+        totalSize: file.size,
+        timestamp: new Date().toISOString(),
+        chunks: Array.from({ length: Math.ceil(file.size / CHUNK_SIZE) }, 
+            (_, i) => ({
+                index: i,
+                size: Math.min(CHUNK_SIZE, file.size - (i * CHUNK_SIZE)),
+                status: 'pending'
+            }))
+    };
+
+    // Send manifest first
+    dataChannel.send(JSON.stringify({
+        type: 'manifest',
+        manifest: manifest
     }));
 
     const reader = new FileReader();
-    let offset = 0;
+    let chunkIndex = 0;
 
     reader.onload = (e) => {
+        // Send chunk with metadata
+        dataChannel.send(JSON.stringify({
+            type: 'chunk-meta',
+            chunkIndex: chunkIndex,
+            fileName: file.name
+        }));
+        
+        // Send actual chunk data
         dataChannel.send(e.target.result);
-        offset += e.target.result.byteLength;
-
-        const progress = Math.round((offset / file.size) * 100);
+        
+        chunkIndex++;
+        const progress = Math.round((chunkIndex * CHUNK_SIZE / file.size) * 100);
         document.getElementById('file-status').textContent = `Sending file... ${progress}%`;
 
-        if (offset < file.size) {
+        if (chunkIndex * CHUNK_SIZE < file.size) {
             readNextChunk();
         } else {
             document.getElementById('file-status').textContent = 'File sent!';
@@ -320,7 +444,9 @@ document.getElementById('send-file').onclick = async () => {
     };
 
     const readNextChunk = () => {
-        const slice = file.slice(offset, offset + CHUNK_SIZE);
+        const start = chunkIndex * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, file.size);
+        const slice = file.slice(start, end);
         reader.readAsArrayBuffer(slice);
     };
 
