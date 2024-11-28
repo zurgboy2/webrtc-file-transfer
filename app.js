@@ -200,17 +200,33 @@ function setupDataChannel(channel) {
 
             if (receivedSize >= fileSize) {
                 const blob = new Blob(fileChunks);
-                const url = URL.createObjectURL(blob);
                 const div = document.getElementById('received-files');
                 const link = document.createElement('a');
-                link.href = url;
-                link.download = currentFile.name;
-                link.textContent = `Download ${currentFile.name} (${currentFile.size} bytes)`;
+                
+                // Try-catch block for blob URL creation
+                try {
+                    const url = URL.createObjectURL(blob);
+                    link.href = url;
+                    link.download = currentFile.name;
+                    link.textContent = `Download ${currentFile.name} (${currentFile.size} bytes)`;
+                    
+                    // Immediately revoke the URL after creating the link
+                    link.onclick = () => {
+                        setTimeout(() => {
+                            URL.revokeObjectURL(url);
+                        }, 100);
+                    };
+                } catch (e) {
+                    console.error('Error creating blob URL:', e);
+                    // Fallback for mobile devices
+                    link.href = '#';
+                    link.textContent = `${currentFile.name} (${currentFile.size} bytes) - Save not supported on this device`;
+                }
+                
                 div.appendChild(link);
                 div.appendChild(document.createElement('br'));
                 
                 // Cleanup
-                setTimeout(() => URL.revokeObjectURL(url), 1000);
                 fileChunks = [];
                 document.getElementById('file-status').textContent = 'File received!';
             }

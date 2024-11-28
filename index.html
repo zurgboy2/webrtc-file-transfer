@@ -13,6 +13,8 @@
             --border-color: #3f3f3f;
             --error-color: #ff4444;
             --success-color: #4CAF50;
+            --mobile-padding: 12px;
+            --mobile-button-height: 44px;
         }
 
         * {
@@ -20,6 +22,7 @@
             padding: 0;
             box-sizing: border-box;
             font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            -webkit-tap-highlight-color: transparent;
         }
 
         body {
@@ -28,6 +31,8 @@
             line-height: 1.6;
             padding: 2rem;
             min-height: 100vh;
+            -webkit-touch-callout: none;
+            overscroll-behavior: contain;
         }
 
         #main-container {
@@ -59,10 +64,17 @@
             font-weight: 500;
             transition: background-color 0.2s;
             margin: 0.5rem 0;
+            min-height: var(--mobile-button-height);
+            font-size: 16px;
+            touch-action: manipulation;
         }
 
         button:hover {
             background-color: var(--hover-accent);
+        }
+
+        button:active {
+            transform: scale(0.98);
         }
 
         #disconnect {
@@ -82,6 +94,10 @@
             color: var(--text-primary);
             border-radius: 8px;
             resize: vertical;
+            font-size: 16px;
+            -webkit-appearance: none;
+            appearance: none;
+            box-shadow: none !important;
         }
 
         textarea {
@@ -96,6 +112,7 @@
             border-radius: 8px;
             margin: 1rem 0;
             border: 1px solid var(--border-color);
+            -webkit-overflow-scrolling: touch;
         }
 
         #messages p {
@@ -120,6 +137,7 @@
             padding: 1rem;
             border-radius: 8px;
             margin: 1rem 0;
+            flex-wrap: wrap;
         }
 
         #file-input {
@@ -127,8 +145,8 @@
         }
 
         #file-icon {
-            width: 40px;
-            height: 40px;
+            width: 48px;
+            height: 48px;
             background-color: var(--accent-color);
             border-radius: 8px;
             display: flex;
@@ -146,12 +164,18 @@
             content: "📄";
         }
 
+        #file-name {
+            flex: 1;
+            font-size: 14px;
+            word-break: break-all;
+        }
+
         #delete-file {
             background-color: var(--error-color);
             padding: 0.5rem;
             border-radius: 50%;
-            width: 30px;
-            height: 30px;
+            width: 44px;
+            height: 44px;
             display: none;
             align-items: center;
             justify-content: center;
@@ -176,6 +200,12 @@
         #received-files a {
             color: var(--accent-color);
             text-decoration: none;
+            display: block;
+            padding: 12px;
+            margin: 8px 0;
+            background-color: var(--primary-bg);
+            border-radius: 8px;
+            word-break: break-all;
         }
 
         #received-files a:hover {
@@ -203,18 +233,55 @@
         /* Responsive design */
         @media (max-width: 768px) {
             body {
-                padding: 1rem;
+                padding: var(--mobile-padding);
             }
 
             #main-container {
-                padding: 1rem;
+                padding: var(--mobile-padding);
+                max-width: 100%;
+                margin: 0;
             }
 
             button {
                 width: 100%;
             }
+
+            #messages {
+                height: 50vh;
+            }
+        }
+
+        @media (max-width: 480px) {
+            body {
+                padding: 8px;
+            }
+
+            #main-container {
+                padding: 12px;
+                border-radius: 6px;
+            }
+
+            textarea {
+                max-height: 120px;
+            }
+
+            #messages {
+                height: 40vh;
+            }
+        }
+
+        /* Safe area insets for notched phones */
+        @supports (padding: env(safe-area-inset-top)) {
+            body {
+                padding: env(safe-area-inset-top) env(safe-area-inset-right) 
+                        env(safe-area-inset-bottom) env(safe-area-inset-left);
+            }
         }
     </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 </head>
 <body>
     <div id="main-container">
